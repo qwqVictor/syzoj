@@ -8,6 +8,7 @@ let Contest = syzoj.model('contest');
 let Problem = syzoj.model('problem');
 
 const { getSubmissionInfo, getRoughResult, processOverallResult } = require('../libs/submissions_process');
+const jwt = require('jsonwebtoken');
 
 // 获取提交记录列表
 app.get('/api/v2/submissions', async (req, res) => {
@@ -122,6 +123,19 @@ app.get('/api/v2/submissions', async (req, res) => {
     // 排序
     query.orderBy('id', 'DESC');
 
+    // 显示配置
+    const displayConfig = {
+      showScore: true,
+      showUsage: true,
+      showCode: true,
+      showResult: true,
+      showOthers: !inContest || (contest && contest.ended),
+      showTestdata: true,
+      showDetailResult: true,
+      inContest: inContest,
+      showRejudge: false
+    };
+
     // 分页
     const paginate = syzoj.utils.paginate(await JudgeState.countForPagination(query), page, syzoj.config.page.judge_state);
     const judgeStates = await JudgeState.queryPage(paginate, query);
@@ -132,8 +146,9 @@ app.get('/api/v2/submissions', async (req, res) => {
       await judgeState.loadRelationships();
       
       const state = judgeState;
-      const info = await getSubmissionInfo(state, await state.hasPrivilege(curUser, 'manage'));
-      const roughResult = getRoughResult(info, curUser);
+      const hasManagePermission = curUser && await curUser.hasPrivilege('manage_problem');
+      const info = getSubmissionInfo(state, displayConfig);
+      const roughResult = getRoughResult(state, displayConfig, true);
       
       items.push({
         id: state.id,
@@ -157,23 +172,14 @@ app.get('/api/v2/submissions', async (req, res) => {
         formatted_submit_time: syzoj.utils.formatDate(state.submit_time),
         running: state.running,
         result: roughResult,
-        token: info.token,
+        token: (state.pending && state.task_id != null) ? jwt.sign({
+          taskId: state.task_id,
+          type: 'rough',
+          displayConfig: displayConfig
+        }, syzoj.config.session_secret) : null,
         url: syzoj.utils.makeUrl(['submission', state.id])
       });
     }
-
-    // 显示配置
-    const displayConfig = {
-      showScore: true,
-      showUsage: true,
-      showCode: true,
-      showResult: true,
-      showOthers: !inContest || (contest && contest.ended),
-      showTestdata: true,
-      showDetailResult: true,
-      inContest: inContest,
-      showRejudge: false
-    };
 
     res.send({
       success: true,
@@ -215,7 +221,7 @@ app.get('/api/v2/submissions/:id', async (req, res) => {
     await judgeState.loadRelationships();
 
     const curUser = res.locals.user;
-    const hasPermission = await judgeState.hasPrivilege(curUser, 'manage');
+    const hasPermission = curUser && await curUser.hasPrivilege('manage_problem');
     
     if (!await judgeState.isAllowedVisitBy(curUser)) {
       return res.send({
@@ -224,13 +230,23 @@ app.get('/api/v2/submissions/:id', async (req, res) => {
       });
     }
 
-    const info = await getSubmissionInfo(judgeState, hasPermission);
-    const roughResult = getRoughResult(info, curUser);
-    const overallResult = processOverallResult(info.result, curUser);
+    // 显示配置
+    const displayConfig = {
+      showScore: true,
+      showUsage: true,
+      showCode: hasPermission || (curUser && curUser.id === judgeState.user_id),
+      showResult: true,
+      showTestdata: hasPermission,
+      showDetailResult: hasPermission
+    };
+
+    const info = getSubmissionInfo(judgeState, displayConfig);
+    const roughResult = getRoughResult(judgeState, displayConfig, false);
+    const overallResult = processOverallResult(judgeState.result, displayConfig);
 
     // 获取代码（如果有权限）
     let code = null;
-    if (info.allowedSeeCode) {
+    if (displayConfig.showCode) {
       if (judgeState.language) {
         code = {
           content: judgeState.code,
@@ -289,10 +305,10 @@ app.get('/api/v2/submissions/:id', async (req, res) => {
         roughResult: roughResult,
         info: info,
         permissions: {
-          allowedSeeCode: info.allowedSeeCode,
-          allowedSeeData: info.allowedSeeData,
-          allowedSeeDetail: info.allowedSeeDetail,
-          allowedRejudge: info.allowedRejudge
+          allowedSeeCode: displayConfig.showCode,
+          allowedSeeData: displayConfig.showTestdata,
+          allowedSeeDetail: displayConfig.showDetailResult,
+          allowedRejudge: hasPermission
         }
       }
     });
