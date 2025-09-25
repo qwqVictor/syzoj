@@ -28,6 +28,13 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
+// Logout
+app.post('/api/logout', async (req, res) => {
+  req.session.user_id = null;
+  res.clearCookie('login');
+  res.send({ error_code: 1 });
+});
+
 app.post('/api/forget', async (req, res) => {
   try {
     res.setHeader('Content-Type', 'application/json');
